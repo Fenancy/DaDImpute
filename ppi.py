@@ -1,8 +1,20 @@
-#!/usr/bin/env python3                                                                                              
+#!/usr/bin/env python3
 import numpy as np
 import pandas as pd
+from scipy import sparse
 
-def gg_csv(ppi_file, sep = ' '):
+def gen_g2i(exp_genes, ppi_genes, len_g):
+ set_exp = set(exp_genes)
+ set_ppi = set(ppi_genes)
+ extra = set_ppi - set_exp
+ extra = list(extra)
+ len_extra = len(extra)
+ g2i_adj = {exp_genes[i]:i for i in range(len_g)}
+ g2i_adj.update({extra[i]:i+len_g for i in range(len_extra)})
+ print (len_extra, len_g, len(ppi_genes),len(set_ppi),'lwngth extra inter ppi_genes ppiset')
+ return g2i_adj, len(set_ppi)
+
+def gg_from_ppi(ppi_file, mapping_file, g_names, len_g, sep = ' '):
  '''                                                            
  Generates the gene-gene matrix from ppi network
   '''
@@ -11,41 +23,40 @@ def gg_csv(ppi_file, sep = ' '):
  #get the column names
  protein1 = ppi.columns[0]
  protein2 = ppi.columns[1]
- #get the weights
- weight = ppi[ppi.columns[9]] #column 9 is the experiments scores
+ #get the weightss
+ weights = ppi[ppi.columns[9]] #column 9 is the experiments scores
  #trim off the first 5 characters of the protein names ('9606.')
  p1_names = ppi[protein1].apply(lambda x: x[5:])
  p2_names = ppi[protein2].apply(lambda x: x[5:])
  #get the unique protein names
- set1 = set(p1_names)
- set2 = set(p2_names)
- if (set1==set2):
-  protein_names = set1
- #if set 1 and set2 do not completely overlap, take the union of them
- else: protein_names = set1 | set1
+ protein_names = set(p1_names)
  #convert to list
- protein_names = list(protein_names)
- num_protein = len(protein_names)
- #sort the names                                                                
- protein_names = sorted(protein_names)
- #construc the protein-protein affinity matrix
- matrix = np.zeros([num_protein, num_protein])
- for i in range(len(weight)):
-  edge_weight = weight[i]
-  #if the edge weight is zero, skip
-  if edge_weight==0: continue
-  #else, find the indices of protein1 and protein2 in this row
-  index_row = protein_names.index(p1_names[i])
-  index_col = protein_names.index(p2_names[i])
-  #fill the matrix
-  matrix[index_row][index_col], matrix[index_col][index_row] = edge_weight, edge_weight
+ protein_names = sorted(list(protein_names))
+ #get the map to genes
+ (protein2gene, ppi_genes) = protein_to_gene(protein_names, mapping_file)
+ #convert the weight of those proteins that are not in the map to be 0
+ #weights[not_in_map] = 0
+ g2i_adj, len_m = gen_g2i(g_names, ppi_genes, len_g)
+ #################construction the protein-protein affinity matrix##################
+ #get the indices (row number) of nonzero edges
+ ind_non0edge = weights.nonzero()
+ ind_non0edge = ind_non0edge[0]
+ #the indices of the p1 and p2 in the sorted unique protein list, to be the indices of the row/col
+ ind_row, ind_col = [], []
+ #get the protein ids corresponding to each edge
+ np.save("/Users/Vie/Google Drive/Autumn 2018/COMP 401/scRNA seq imputation/p2g.npy",protein2gene)
+ for ind in ind_non0edge:
+  ind_row.append(g2i_adj[protein2gene[p1_names[ind]]])
+  ind_col.append(g2i_adj[protein2gene[p2_names[ind]]])
+
+ #construct the sparse matrix
+ matrix = sparse.csr_matrix((weights[ind_non0edge].values, (ind_row, ind_col)), shape = (len_m, len_m), dtype=float)
  #normalisation
- for i in range(num_protein):
+ for i in range(len_m):
   row_sum = np.sum(matrix[i])
+  if (row_sum==0): continue
   matrix[i] = matrix[i]/row_sum
- print (matrix)
- print (protein_names) 
- return matrix, num_protein, protein_names
+ return matrix, len_m
 
 def protein_to_gene(protein_names, mapping, sep='\t'):
  '''
@@ -58,33 +69,25 @@ def protein_to_gene(protein_names, mapping, sep='\t'):
  '''
  map = pd.read_csv(mapping, sep=sep)
  #get the column name that contains the protein ids
- col_p = map.columns[1] 
+ col_p = map.columns[1]
  #the column name that contains the gene ids
  col_g = map.columns[0]
  #removes the rows where the gene does not produce protein
  map = map.dropna()
  #resort the series by protein id
  map = map.sort_values(by=[col_p])
- i = 0
  len_map = len(map[col_p])
+ #############
+ p2g = {map[col_p].iloc[i]:map[col_g].iloc[i] for i in range(len_map)}
  gene_names = []
  for p in protein_names:
-  for x in range(i, len_map):
-   #iteration through the protein id list (from the last found id)
-   if (map[col_p][x] == p):
-    i=x
-    gene_names.append(map[col_p][x])
- return gene_names
+  try:
+   gene_names.append(p2g[p])
+  except KeyError:
+   gene_names.append(p)
+   continue
+ protein2gene = {protein_names[i]:gene_names[i] for i in range(len(protein_names))}
+# gene_sorted = sorted(list(set(gene_names)))
+# len_matrix = len(gene_sorted)
+ return protein2gene, gene_names
 
-
-def main():
- ppi_file="/users/Vie/Google Drive/Autumn 2018/COMP 401/scRNA seq imputation/human.ppi.txt"
- (gg_matrix, num_protein, protein_names) = gg_csv(ppi_file)
- mapping = "/Users/Vie/Google Drive/Autumn 2018/COMP 401/scRNA seq imputation/mart_gene_to_protein_mapping.txt"
- gene_names = protein_to_gene(protein_names, mapping)
- #seve the matrix as dataframe with column names
- gg_matrix = pd.DataFrame(data = matrix,  columns=protein_names)
- gg_matrix.to_pickle("/users/Vie/Google Drive/Autumn 2018/COMP 401/scRNA seq imputation/gene_gene_affinity_matrix.pkl")
-
-if __name__ == '__main__':
- main()
