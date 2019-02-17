@@ -1,117 +1,132 @@
 #!/usr/bin/env python3
+import time
 import numpy as np
 import pandas as pd
+from scipy import sparse
+import ppi 
+import argparse
 
-def rwr (restart_prob, tran_prob_matrix, length, tolerance, max_i):
- '''
- Random Walk with Restart function takes in:
-  restart probabolity: the probability the walker jump to the start point
-   restart matrix will be the identity matrix of restart probability multiplied by the restart probability  
+
+def argPaser():
+ parser = argparse.ArgumentParser()
+ parser.add_argument('input_matrix', type=str, help='name of the input expression file (csv)', default='./glioblastoma_sub_missing20.csv') #the glioblastoma expression matrix is pre-trimmed to contain only the genes that can be mapped to the proteins present in the ppi network, it's then to be masked (20% in this file)
+ parser.add_argument('-ppi', '--ppi_file', type=str, help='name of the ppi file', default='./human.ppi.txt')
+ parser.add_argument('-m', '--mapping_file', type=str, help='names of the protein to gene mapping file', default='./mart_gene_to_protein_mapping.txt')
+ parser.add_argument('-p', '--prob_restart', type=float, default = 0.5, help='the restart probability to be employed in the random walk with restart process, defaulted to be 0.5')
+ parser.add_argument('-t', '--tolerance', type=float, default = 0.0001, help='the tolerance/threashold to resolve the convergence of the matrix in the random walk with restart process, defaulted to be 0.0001')
+ parser.add_argument('-i', '--max_iteratiion', type=int, default = 100, help='the maximum iteration to be performed in the random walk with restart process, defaulted to be 100')
+ parser.add_argument('--path_gg', type=str, help='file path to store the gene-gene affinity/mimic netSmooth imputed matrix in .npy', default='./ggImpute.npy')
+ parser.add_argument('--path_gc', type=str, help='file path to store the then cell-cell affinity/mimic MAGIC imputed matrix in .npy', default='./ccImpute.npy')
+
+ 
+ args = parser.parse_args()
+ return args
+
+def imputation(prob_matrix, exp_matrix):
+ #apply the result probability matrix to the input matrix
+ imputed = prob_matrix @ exp_matrix
+ return imputed
+
+def rwr(adj_matrix, length, restart_prob, tolerance, max_i):
+ '''                      
+ Random Walk with Restart function, takes in:                                  
+  restart probabolity: the probability the walker jump back to the start point
    continue_prob = probability of not restarting and continue on the transition prob = 1-restart_prob
-  transition probability matrix: row sums = 1; entry(i,j) = transition prob from j to i
-  length = the number of nodes
+  adj_matrix: row sums = 1; entry(i,j) = transition prob from i to j            
+  length = the number of nodes                                                  
   tolerance = the threashold at which the function considered to have converged
-  max_i = maximum iterations allowed
- output:
-  i: number of iterations
-  residual: the final residual 
-  the computed probability matrix
+  max_i = maximum iterations allowed                                          
+ Using equation:
+  prob_matrix' = adjacency matrix * prob_matrix *(1-restart probability) + restart probability * identity matrix
+               = adjacency matrix * prob_matrix *   continue_prob        +             restart_matrix
+ output:                                                                        
+  i: number of iterations                                                       
+  residual: the final residual of the computed probability matrix               
  '''
  continue_prob = 1 - restart_prob
  restart_matrix = np.identity(length) * restart_prob
- prob_matrix_old = np.full((length,length), 1/length)
- print (1/length)
+ prob_matrix_old = np.full((length,length), 1/length) #to start the diffusion from a probability matrix with equal weight in each entry
  residual = 100
- i = 0 # iteration counter
+ i = 0 # iteration counter                         
+ #stime = time.time() # for referencing computing time
  while (residual >= tolerance) and (i <= max_i):
-  prob_matrix = np.matmul(prob_matrix_old, tran_prob_matrix) * continue_prob + restart_matrix
-  residual = np.mean(np.absolute(prob_matrix - prob_matrix_old).sum(axis = 0)) #residule will be the mean of relative distance
+  prob_matrix = adj_matrix @ prob_matrix_old * continue_prob + restart_matrix
+  residual = np.mean(np.absolute(prob_matrix - prob_matrix_old).sum(axis = 0))
+  #residule will be the mean of relative distance                            
   i += 1
-  prob_matrix_old = prob_matrix.copy()
-  print ('residual = ', residual, ' iteration = ', i)
- return i, residual, prob_matrix
+  prob_matrix_old = np.copy(prob_matrix)
+ #print ('residual = ', residual, ' iteration = ', i)
+ #etime = time.time()
+ #print(etime-stime)
+ return prob_matrix
 
-def tpm(gg_affinity, gene_names, cc_affinity, cell_names, ppi_weight=0.5):
+def rowNorm(matrix, length):
+ #function that row normalises a matrix, takes in length = number of rows in the matrix 
+ for i in range(length):
+  row_sum = np.sum(matrix[i])
+  if (row_sum==0): continue
+  matrix[i] = matrix[i]/row_sum
+ return matrix
+
+def extractExpMatrix(exp, geneBycell=True):
  '''
- Transition probabilily matrix construction, takes in:
-  gene-gene affinity matrix is constructed from PPI with all genes appear in the query expression matrix. Gene-gene relationship not in the PPI should have been filled with 0s
-  gene_names is the list containing the index of the gene gene affinity matrix
-  cell-cell affinity matrix is constructed from the cell cell distance infered from the original expression matrix query.
-  cell_names = the index of the cell cell affinity matrix
-Both matrices should have been normalised so the rowsums and colsums equal to 1       
- Outputs: 
-  node_names: the ordering of nodes in the form of an array of (cell_i, gene_j) tuples, permutation of each gene of each cells                        tran_prob_matrix: the constructed transition probability matrix  in the order of the node_names
-  ppi_weight is defaulted to be 0.5, i.e., assigning gene-gene affinity and cell-cell affinity the same weight, it can also be set to a number between 0 and 1  
- '''
- len_c = len(cell_names)
- len_g = len(gene_names)
- length = len_c * len_g
- #initialise the transition probability to be 0 filled, except for the diagonal being the distance between the same nodes
- tran_prob_matrix = np.identity(length) * gg_affinity[1][1]
- #construct node_name list
- node_names=[]
- for c in range(len_c):
-  cell_name = cell_names[c]
-  for g in range(len_g):
-   node_names.append((cell_name, gene_names[g])) 
-
- #######fill in gene-gene affinity into the transition probability matrix
- #iterating through the upper triangle of the gene-gene affinity matrix
- for i in range(len_g-1):
-  for j in range (i+1, len_g):
-   affinity = gg_affinity[i][j] * ppi_weight
-   #fill in affinity for all the gene_i and gene_j pairs sharing the same cell, iterating from cell_0
-   for x in range(0, length, len_g):
-    tran_prob_matrix[x+i][x+j], tran_prob_matrix[x+j][x+i] = affinity, affinity
-
- ######fill in the cell-cell affinity #############
- for i in range(len_c-1):
-  for j in range(i+1, len_c):
-   affinity = cc_affinity[i][j]/2
-   ii = i*len_g
-   jj = j*len_g
-   for x in range(len_g):
-    tran_prob_matrix[ii+x][jj+x], tran_prob_matrix[jj+x][ii+x] = affinity, affinity
- return node_names, tran_prob_matrix
-
- 
-def c_c(exp_matrix)
- '''
- cell_cell affnity matrix construction function, measures cell cell euclidean distance then  normalise using 1/(1+d)
- input:
-  expression matrix (cell by gene) in the format of pandas dataframe
+ helper method to extract information from the input DataFrame matrix and convert it to be gene by cell 
  output:
-  matrix: cell cell affinity matrix
+  exp_matrix: the expression matrix (gene by cell) in the format of numpy array
   c_names: the index of cell names
   g_names: the index of gene names
+  len_c: number of cells
+  len_g: number of genes
  '''
- c_names = exp_matrix.index
- g_names = exp_matrix.column
+ if (geneBycell==False):
+  exp = exp.transpose() # if needed, convert the matrix to be gene by cell first
+ g_names = exp.index
+ c_names = exp.columns
+ exp_matrix = exp.values
  len_c = len(c_names)
- matrix = np.zeros([len_c,len_c])
+ len_g = len(g_names)
+ return (exp_matrix, c_names, g_names, len_c, len_g)
+
+def gen_cc_matrix(exp_matrix, len_c):
+ '''
+ Generating cell-cell matrix: cell_cell affnity matrix construction function, measures the Euclidean distance between each cell cell pair
+ '''
+ matrix = np.zeros([len_c,len_c]) #initialise a 0 filled matrix
  for i in range(len_c-1):
   for j in range(i+1, len_c):
    #calculation of the euclidean distance
    d = np.sum((exp_matrix[i]-exp_matrix[j])**2)
-   d = d**(1/2)
+   d = 1/(1+d**(1/2))
    matrix[i][j], matrix[j][i] = d, d
- matrix = 1/(matrix+1)
- ############ matrices inputs are handled in the format of pandas dataframes #########################
- ppi = proper ppi matrix (only contains the genes in the expression matrix)
- expression_matrix is required to be gene by cell (should be handled in io step)
- outputs:
- length = number of cells * number of genes = the number of nodes 
- node_names: the ordering of nodes in the form of an array of (celli, genej) tuples, permutation of each gene of each cells
- tran_prob_matrix: the constructed transition probability matrix  in the ordering of the node_names
- '''
- 
+  #normalisation
+  matrix = rowNorm(matrix, len_c)
+ return matrix
+
+def gen_g2i(g_names, len_g):
+ #Function generating the dictionary mapping gene name to its index in the expresssion matrix
+ gene2index = {g_names[i]:i for i in range(len_g)}
+ return gene2index 
 
 def main():
+ args = argPaser()
+ exp = pd.read_csv(args.input_matrix, header=0, index_col=0) #read the input expression file to panda DataFrame
+ (exp_matrix, c_names, g_names, len_c, len_g) = extractExpMatrix(exp) #convert to numpy array and extract cell/gene names as well as the dimension of the matrix
+ #generation of a gene-gene affinity matrix from the ppi file and protein to gene mapping file, using method from python file 'ppi'
+ (gg_matrix, len_ppi) = ppi.gg_from_ppi(args.ppi_file, args.mapping_file, g_names, len_g)
+ #run random walk with restart method on the gene-gene matrix
+ gg_rwr = rwr(gg_matrix, len_ppi, args.prob_restart, args.tolerance, args.max_iteratiion)
+ gg_rwr = gg_rwr[:len_g, :len_g] #trim off the genes that are not in the input file (only in the ppi network)
+ gg_rwr = rowNorm(gg_rwr, len_g) #normalisation
+ #np.save("you can save the gene-gene probability matrix after rwr to avoid repetitive work",gg_rwr)
+ #gg_rwr = np.load("the npy file containing the gene-gene matrix after rwr from previous computation")
+ imputedgg = imputation(gg_rwr, exp_matrix) #first impute the expression matrix by 'mimic' netSmooth
+ np.save(args.path_gg, imputedgg)
+ imputedgg = imputedgg.transpose() #for 'mimic' MAGIC the input needs to be cell by gene
+ cc_matrix = gen_cc_matrix(imputedgg, len_c) #generating the cell-cell affinity matric
+ cc_rwr = rwr(cc_matrix, len_c, args.prob_restart, args.tolerance, args.max_iteratiion) #imputation
+ cc_rwr = rowNorm(cc_rwr, len_c) #normalisation
+ imputedgc = imputation(cc_rwr, imputedgg) #apply the cell-cell probability matrix after rwr to the previously imputed matrix
+ np.save(args.path_gc, imputedgc)
 
- print ('matrix a\n',a)
- print ('matrix b\n', b)
- result = tpm(a, name_a, b, name_b)
- print (result)
- print ('row sums', np.sum(result[1], axis=1))
 if __name__ == '__main__':
  main()
