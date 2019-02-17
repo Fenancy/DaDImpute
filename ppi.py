@@ -4,14 +4,19 @@ import pandas as pd
 from scipy import sparse
 
 def gen_g2i(exp_genes, ppi_genes, len_g):
+ '''
+ generates a dictionary mapping gene names to its index in the later gene-gene matrix:
+ genes that are in the input expression matrix
+ followed by the extra genes that are only in the ppi network
+ which makes it easier to get rid of the unwanted/extra genes after rwr
+ '''
  set_exp = set(exp_genes)
  set_ppi = set(ppi_genes)
- extra = set_ppi - set_exp
+ extra = set_ppi - set_exp #compare and get the non-overlaped genes in the expression matrix and ppi network
  extra = list(extra)
  len_extra = len(extra)
- g2i_adj = {exp_genes[i]:i for i in range(len_g)}
- g2i_adj.update({extra[i]:i+len_g for i in range(len_extra)})
- print (len_extra, len_g, len(ppi_genes),len(set_ppi),'lwngth extra inter ppi_genes ppiset')
+ g2i_adj = {exp_genes[i]:i for i in range(len_g)} #first map the genes in the input file
+ g2i_adj.update({extra[i]:i+len_g for i in range(len_extra)}) #add the extra genes that are only in the ppi network
  return g2i_adj, len(set_ppi)
 
 def gg_from_ppi(ppi_file, mapping_file, g_names, len_g, sep = ' '):
@@ -44,7 +49,7 @@ def gg_from_ppi(ppi_file, mapping_file, g_names, len_g, sep = ' '):
  #the indices of the p1 and p2 in the sorted unique protein list, to be the indices of the row/col
  ind_row, ind_col = [], []
  #get the protein ids corresponding to each edge
- np.save("/Users/Vie/Google Drive/Autumn 2018/COMP 401/scRNA seq imputation/p2g.npy",protein2gene)
+ #np.save("./p2g.npy",protein2gene)
  for ind in ind_non0edge:
   ind_row.append(g2i_adj[protein2gene[p1_names[ind]]])
   ind_col.append(g2i_adj[protein2gene[p2_names[ind]]])
