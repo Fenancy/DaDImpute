@@ -1,0 +1,2 @@
+# DaDImpute
+DaDImpute (Data Diffusion on imputing scRNAseq), is a novel computational approach incorporating information on the inherent cell-cell relationship as well as external information on gene-gene relationship estimate the true values of the false-zero counts. We corroborate DadImpute’s ability to effectively recuperate the missing value and recover the gene expression patterns, by imputing masked glioblastoma data and comparing the result with the original values.
